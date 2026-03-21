@@ -1,0 +1,28 @@
+# Compiled binaries
+bin/
+*.exe
+
+# SQLite databases
+data/
+*.db
+
+# Credentials and secrets
+safe-log-helper/*.json
+*.key
+*.pem
+.env
+credentials.*
+
+# Go build artifacts
+vendor/
+
+# Local Claude settings (machine-specific)
+.claude/
+config/.claude/
+
+# Sub-projects with their own repos
+indexer/
+
+# OS noise
+.DS_Store
+Thumbs.db
