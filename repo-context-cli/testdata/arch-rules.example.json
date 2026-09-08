@@ -1,0 +1,22 @@
+{
+  "layers": {
+    "domain": ["**/domain/**", "**/Domain/**"],
+    "application": ["**/application/**", "**/Application/**"],
+    "infrastructure": ["**/infrastructure/**", "**/Infrastructure/**"],
+    "interface": ["**/http/**", "**/Api/**", "**/interface/**"],
+    "composition": ["**/composition/**", "**/Program.cs"]
+  },
+  "allowed": {
+    "composition": ["domain", "application", "infrastructure", "interface", "composition"],
+    "interface": ["application", "domain", "interface"],
+    "infrastructure": ["application", "domain", "infrastructure"],
+    "application": ["domain", "application"],
+    "domain": ["domain"]
+  },
+  "forbiddenPackages": {
+    "domain": ["better-sqlite3", "fastify", "react", "Microsoft.EntityFrameworkCore", "Microsoft.AspNetCore"],
+    "application": ["better-sqlite3", "react", "Microsoft.EntityFrameworkCore"]
+  },
+  "ignore": ["**/*.test.ts", "**/*.test.tsx", "**/node_modules/**"],
+  "unlayeredSeverity": "warning"
+}

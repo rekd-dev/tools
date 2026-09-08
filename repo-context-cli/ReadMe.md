@@ -4,10 +4,12 @@ Pre-computes repository analysis signals so AI agents can understand a codebase 
 
 ## How it works
 
-1. `init` — protects analysis clone repos with `.git/info/exclude` so no accidental commits occur
-2. `inventory` — deep signal scan that detects stacks, routes, messaging patterns, complexity hotspots, project dependencies, type symbols, DI mappings, endpoint signatures, and event flow topology; writes `inventory.db` (SQLite) + `inventory-toc.json` to `.context/`
+1. `init` — creates `.context/` (optional `--protect` for analysis-only clones)
+2. `inventory` — deep signal scan plus an **evidence-aware graph** (heuristic always; TypeScript compiler / Roslyn when `--semantic=auto|required`); writes `inventory.db` + `inventory-toc.json` to `.context/`
 3. `query` — SQL-powered query interface for the inventory database (raw SQL or predefined section aliases)
-4. `index` — shows current vs stale status across all repos at a glance
+4. `fitness` — architecture fitness reporter (cycles, Clean Architecture layer violations, domain purity); JSON contract for CI + the viewer
+5. `serve` — local HTTP API over `inventory.db` for the separate `arch-view` SPA
+6. `index` — shows current vs stale status across all repos at a glance
 
 An agent can use `repo-context query --sql "..."` for precise lookups, `--section <name>` for broad overviews, or load `inventory-toc.json` (~1–3KB) for a lightweight summary.
 
@@ -29,20 +31,16 @@ Builds to `../bin/repo-context` (or `repo-context.exe` on Windows).
 
 ### `init <path>`
 
-Initializes analysis protection for all git repos inside `<path>` (or the single repo at `<path>` if it is itself a git repo).
-
-For each repo:
-- Creates `.context/` directory
-- Appends to `.git/info/exclude` to ensure no accidental commits from analysis clones
-- Verifies `git status --porcelain` is clean after writing
+Creates `.context/` for git repos in `<path>`. Working repos should not pass `--protect`.
 
 ```bash
 repo-context init ./repos
-repo-context init ./repos/MyRepo --force
+repo-context init ./clone --protect   # analysis-only clones: exclude all files from git
 ```
 
 **Flags:**
 - `--force` — re-initialize even if already done
+- `--protect` — append `*` to `.git/info/exclude` (analysis-only clones only)
 
 ### `inventory <path>`
 
@@ -60,6 +58,7 @@ repo-context inventory ./repos --pull
 - `--refresh` — only re-scan files changed since last inventory (`git diff --name-only`)
 - `--force` — full rescan even if inventory is current (SHA matches)
 - `--pull` — run `git pull` before scanning (explicit opt-in only)
+- `--semantic` — `auto` (default: run TypeScript/Roslyn sidecars when present, else heuristic), `required` (fail if a needed sidecar is missing), `off` (heuristic graph only)
 
 **Default behaviour:** if `inventory.db` exists and the git SHA matches current HEAD, prints a "inventory is current" message and exits. Pass `--force` to override.
 
@@ -152,7 +151,65 @@ repo-context query ./repos/MyRepo --section events
 - `di` — dependency injection mappings
 - `endpoints` — detailed endpoint signatures (route, method, handler, auth)
 - `events` — event flow topology (publish/subscribe/handle across stacks)
+- `modules` — architecture module graph nodes (TS/C# files + layer)
+- `module-deps` — module dependency edges (direct / external)
 - `all` — all sections
+
+### `fitness <path>`
+
+Architecture fitness reporter. Builds or reads the module graph, applies Clean Architecture conventions (optional `arch-rules.json`), and emits the **viewer/CI JSON contract**.
+
+```bash
+repo-context fitness ./repos/MyRepo --format table
+repo-context fitness ./repos/MyRepo --rules ./arch-rules.json --fail-on error
+repo-context fitness ./testdata/ts-ca --rescan --format json
+repo-context fitness ./testdata/ts-ca-bad --rescan --format json
+```
+
+**Checks:**
+1. **Cycles** — module dependency cycles (error)
+2. **Layer violations** — disallowed edges between `domain` / `application` / `infrastructure` / `interface` / `composition` / `web` (error)
+3. **Domain purity** — forbidden framework packages in `domain` (error) and `application` (warning)
+4. **Unlayered** — files that matched no layer (warning; silence via `ignore` globs)
+
+**Flags:**
+- `--format` — `json` (default) or `table`
+- `--rules` — path to `arch-rules.json` (else `<repo>/arch-rules.json` if present, else built-in defaults)
+- `--fail-on` — exit `1` if any finding ≥ this severity (`error` default)
+- `--rescan` — rebuild module graph from source instead of `inventory.db`
+
+Example `arch-rules.json`: see `testdata/arch-rules.example.json`.
+
+**JSON contract (stdout):**
+
+```json
+{
+  "repo": "MyRepo",
+  "path": "...",
+  "gitSha": "abc1234",
+  "rulesSource": "default",
+  "summary": { "modules": 0, "deps": 0, "errors": 0, "warnings": 0, "cycles": 0, "layerViolations": 0, "domainPurity": 0, "unlayered": 0 },
+  "findings": [{ "id": "cycle-1", "kind": "cycle", "severity": "error", "message": "...", "cycle": "a->b->a" }],
+  "modules": [{ "id": "...", "path": "...", "language": "typescript", "layer": "domain", "abstract": false }],
+  "cycles": ["a->b->a"]
+}
+```
+
+### `serve <path>`
+
+Local HTTP API for the separate `arch-view` React SPA.
+
+```bash
+repo-context serve ./repos/MyRepo --addr 127.0.0.1:8787
+repo-context serve ./repos/MyRepo --static ../arch-view/dist
+repo-context serve ./repos/MyRepo --rules ./arch-rules.json
+```
+
+**Flags:** `--addr` (default `127.0.0.1:8787`), `--static` (optional `arch-view` `dist/`), `--rules` (optional `arch-rules.json`).
+
+**Endpoints:** `/api/health`, `/api/meta`, `/api/modules`, `/api/module-deps`, `/api/fitness`, `/api/view?path=`, `/api/source?file=`, `/api/search?q=`, `/api/entity?id=`, `/api/edge?id=`, `/api/path?from=&to=&maxDepth=&maxNodes=&kinds=`, `/api/graph-view?lens=architecture|focus|flow&path=&sel=&overlays=`, `/api/coverage`
+
+`/api/graph-view` lenses: `architecture` (module drill-down still uses `/api/view`), `focus` (neighborhood around `sel`), `flow` (bounded path from `sel`). The SPA hash restores `lens`, `path`, `sel`, and overlays (`data`, `async`).
 
 ### `index <path>`
 
@@ -202,6 +259,13 @@ repo-context help
 | `di_mappings`        | DI registrations (interface → implementation, lifetime)       |
 | `endpoints`          | HTTP endpoint signatures (route, method, handler, auth)       |
 | `event_flows`        | Event pub/sub topology (direction, mechanism, event_type)     |
+| `modules`            | Architecture module nodes (file, language, layer, abstract)   |
+| `module_deps`        | Module dependency edges (direct / abstract / external)        |
+| `module_ext_imports` | External packages imported by a module (purity checks)        |
+| `graph_nodes`        | Evidence-aware graph nodes (file, type, method, endpoint…)   |
+| `graph_edges`        | Typed relations with analyzer + confidence                     |
+| `graph_evidence`     | All observations for an edge                                  |
+| `analysis_coverage`  | Whether heuristic / TypeScript / Roslyn ran                  |
 
 All tables have a `source` column (`heuristic` by default) to support future Roslyn enrichment.
 
@@ -214,15 +278,22 @@ repo-context init ./repos
 # 2. Run first inventory scan
 repo-context inventory ./repos --format table
 
-# 3. Query specific data (agent-friendly)
+# 3. Architecture fitness (CI)
+repo-context fitness ./repos/MyRepo --fail-on error
+
+# 4. Query specific data (agent-friendly)
+repo-context query ./repos/MyRepo --section modules
 repo-context query ./repos/MyRepo --section types
 repo-context query ./repos/MyRepo --sql "SELECT * FROM di_mappings WHERE interface = 'IOrderService'"
 repo-context query ./repos/MyRepo --section events --format table
 
-# 4. Check status across all repos
+# 5. Viewer API + SPA
+repo-context serve ./repos/MyRepo --static ../arch-view/dist
+
+# 6. Check status across all repos
 repo-context index ./repos
 
-# 5. After code changes, refresh incrementally
+# 7. After code changes, refresh incrementally
 repo-context inventory ./repos --refresh
 ```
 
@@ -232,12 +303,16 @@ repo-context inventory ./repos --refresh
 | -------------------- | ----------------------------------------------------- |
 | `inventory.db`       | SQLite database — the authoritative queryable store   |
 | `inventory-toc.json` | Lightweight summary with metadata and counts (~1–3KB) |
+| `arch-rules.json`    | Optional layer/purity guidance at repo root           |
 
 ## Notes
 
-- **`.git/info/exclude` protection** — the `init` command appends `*` to `.git/info/exclude` so that all files in analysis-only clones are excluded from git tracking.
+- **`.git/info/exclude` protection** — `init --protect` appends `*` for analysis-only clones. Do not use `--protect` on working repos.
+- **Semantic analyzers** — optional Node TypeScript compiler sidecar (`analyzers/typescript`) and Roslyn sidecar (`analyzers/roslyn`). Heuristic facts stay available; compiler-resolved facts have higher confidence. Unresolved dispatch is kept and marked.
 - **Pure Go SQLite** — uses `modernc.org/sqlite` (no CGO). Adds ~8MB to binary size.
 - **Project dependency detection** — parses `.csproj` `ProjectReference` elements, `angular.json` workspace projects, and TypeScript `paths` aliases to build a cross-project dependency graph with topological sorting and cycle detection.
-- **`--roslyn` flag** — reserved for a future optional .NET Roslyn analyzer that will enrich the same `inventory.db` with semantically-resolved data (call graphs, type hierarchies, generic resolution).
+- **Module graph** — TypeScript imports (relative, path aliases, workspace packages) and C# `using` of in-repo namespaces; framework namespaces (`System.*`, `Microsoft.*`) are external for purity checks.
+- **Roslyn sidecar** — optional .NET analyzer under `analyzers/roslyn`, invoked via `inventory --semantic=auto|required` (not a separate `--roslyn` flag).
 - **File walking** — skips: `bin`, `obj`, `node_modules`, `.git`, `packages`, `dist`, `vendor`, `coverage`, `test-results`.
 - **Backward compatibility** — v1 `inventory.json` files are not read or deleted. The `index` command reports them as `STALE (v1 json)`. Run `inventory --force` to migrate.
+- **Golden targets** — the target repo `apps/schedule-api` and `apps/safelog-api`: domain trees should stay clean; composition/http wiring is outer-layer and should not false-positive as domain.

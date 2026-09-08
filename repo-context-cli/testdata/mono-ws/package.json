@@ -1,0 +1,5 @@
+{
+  "name": "mono-ws",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"]
+}

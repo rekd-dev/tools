@@ -5,6 +5,19 @@ bin/
 # SQLite databases
 data/
 *.db
+.context/
+
+# Node (arch-view)
+arch-view/node_modules/
+arch-view/dist/
+*.tsbuildinfo
+
+
+# Analyzer sidecars
+repo-context-cli/analyzers/typescript/node_modules/
+repo-context-cli/analyzers/roslyn/bin/
+repo-context-cli/analyzers/roslyn/obj/
+repo-context-cli/analyzers/roslyn/.vs/
 
 # Credentials and secrets
 safe-log-helper/*.json

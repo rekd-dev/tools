@@ -1,0 +1,8 @@
+{
+  "name": "repo-context-ts-analyzer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "typescript": "^5.7.2"
+  }
+}

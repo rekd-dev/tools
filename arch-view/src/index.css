@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@source "./**/*.{ts,tsx}";
+
+body {
+  margin: 0;
+  font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.react-flow__edge.cycle .react-flow__edge-path {
+  stroke: #f87171;
+}
+.react-flow__attribution {
+  display: none;
+}

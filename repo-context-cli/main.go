@@ -15,10 +15,18 @@ import (
 	"strings"
 	"time"
 
+	"repo-context-cli/internal/analyzers"
+	"repo-context-cli/internal/analyzers/heuristic"
+	"repo-context-cli/internal/arch"
+	"repo-context-cli/internal/fitness"
+	"repo-context-cli/internal/modules"
+	"repo-context-cli/internal/serve"
+	"repo-context-cli/internal/store"
+
 	_ "modernc.org/sqlite"
 )
 
-const toolVersion = "2.0.0"
+const toolVersion = "2.2.0"
 
 const excludeMarker = "# repo-context-cli — analysis-only clone, never commit from here"
 
@@ -164,6 +172,10 @@ type Inventory struct {
 	Endpoints   []EndpointDetail `json:"endpoints,omitempty"`
 	EventFlows  []EventFlow      `json:"eventFlows,omitempty"`
 
+	// Module architecture graph
+	Modules    []modules.Module `json:"modules,omitempty"`
+	ModuleDeps []modules.Dep    `json:"moduleDeps,omitempty"`
+
 	// Accumulators (not serialized)
 	projRefEdges map[string]map[string]bool `json:"-"`
 	tsPathMap    map[string]string          `json:"-"`
@@ -303,6 +315,8 @@ type TOCSummary struct {
 	DIMappings        int `json:"diMappings"`
 	Endpoints         int `json:"endpoints"`
 	EventFlows        int `json:"eventFlows"`
+	Modules           int `json:"modules"`
+	ModuleDeps        int `json:"moduleDeps"`
 }
 
 // ── SQLite schema ────────────────────────────────────────────────────────────
@@ -419,6 +433,32 @@ CREATE TABLE IF NOT EXISTS event_flows (
     PRIMARY KEY (file, direction, mechanism, event_type)
 );
 
+CREATE TABLE IF NOT EXISTS modules (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    language   TEXT NOT NULL,
+    layer      TEXT,
+    abstract   INTEGER NOT NULL DEFAULT 0,
+    namespace  TEXT,
+    drill_path TEXT,
+    source     TEXT NOT NULL DEFAULT 'heuristic'
+);
+
+CREATE TABLE IF NOT EXISTS module_deps (
+    from_id  TEXT NOT NULL,
+    to_id    TEXT NOT NULL,
+    kind     TEXT NOT NULL,
+    via_file TEXT,
+    PRIMARY KEY (from_id, to_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS module_ext_imports (
+    module_id TEXT NOT NULL,
+    package   TEXT NOT NULL,
+    PRIMARY KEY (module_id, package)
+);
+
 CREATE INDEX IF NOT EXISTS idx_types_kind ON types(kind);
 CREATE INDEX IF NOT EXISTS idx_types_namespace ON types(namespace);
 CREATE INDEX IF NOT EXISTS idx_type_implements_interface ON type_implements(interface);
@@ -428,6 +468,10 @@ CREATE INDEX IF NOT EXISTS idx_complexity_score ON complexity_signals(score);
 CREATE INDEX IF NOT EXISTS idx_event_flows_type ON event_flows(event_type);
 CREATE INDEX IF NOT EXISTS idx_event_flows_mechanism ON event_flows(mechanism);
 CREATE INDEX IF NOT EXISTS idx_event_flows_direction ON event_flows(direction);
+CREATE INDEX IF NOT EXISTS idx_modules_layer ON modules(layer);
+CREATE INDEX IF NOT EXISTS idx_modules_language ON modules(language);
+CREATE INDEX IF NOT EXISTS idx_module_deps_from ON module_deps(from_id);
+CREATE INDEX IF NOT EXISTS idx_module_deps_to ON module_deps(to_id);
 `
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -447,6 +491,10 @@ func main() {
 		runIndex(os.Args[2:])
 	case "query":
 		runQuery(os.Args[2:])
+	case "fitness":
+		runFitness(os.Args[2:])
+	case "serve":
+		runServe(os.Args[2:])
 	case "version":
 		fmt.Printf("repo-context v%s\n", toolVersion)
 	case "help", "--help", "-help", "-h":
@@ -463,9 +511,11 @@ func main() {
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	force := fs.Bool("force", false, "Re-initialize even if already done")
+	protect := fs.Bool("protect", false, "Append * to .git/info/exclude (analysis-only clones only)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: repo-context init <path> [--force]")
-		fmt.Fprintln(os.Stderr, "  Initialize analysis protection for git repos in <path>.")
+		fmt.Fprintln(os.Stderr, "Usage: repo-context init <path> [--force] [--protect]")
+		fmt.Fprintln(os.Stderr, "  Create .context/ for git repos in <path>.")
+		fmt.Fprintln(os.Stderr, "  --protect is for analysis-only clones; do not use on working repos.")
 		fs.PrintDefaults()
 	}
 
@@ -490,7 +540,7 @@ func runInit(args []string) {
 	for _, repo := range repos {
 		repoName := filepath.Base(repo)
 		contextDir := filepath.Join(repo, ".context")
-		initialized := dirExists(contextDir) && isExcludeSet(repo)
+		initialized := dirExists(contextDir)
 
 		if initialized && !*force {
 			fmt.Printf("→ %s — already initialized\n", repoName)
@@ -502,38 +552,23 @@ func runInit(args []string) {
 			continue
 		}
 
-		infoDir := filepath.Join(repo, ".git", "info")
-		if mkErr := os.MkdirAll(infoDir, 0755); mkErr != nil {
-			fmt.Fprintf(os.Stderr, "✗ %s — cannot create .git/info/: %v\n", repoName, mkErr)
+		if *protect {
+			infoDir := filepath.Join(repo, ".git", "info")
+			if mkErr := os.MkdirAll(infoDir, 0755); mkErr != nil {
+				fmt.Fprintf(os.Stderr, "✗ %s — cannot create .git/info/: %v\n", repoName, mkErr)
+				continue
+			}
+			excludeFile := filepath.Join(infoDir, "exclude")
+			if wErr := appendExclude(excludeFile); wErr != nil {
+				fmt.Fprintf(os.Stderr, "✗ %s — cannot update .git/info/exclude: %v\n", repoName, wErr)
+				continue
+			}
+			fmt.Printf("✓ %s — .context/ created (analysis-clone protect on)\n", repoName)
 			continue
 		}
 
-		excludeFile := filepath.Join(infoDir, "exclude")
-		if wErr := appendExclude(excludeFile); wErr != nil {
-			fmt.Fprintf(os.Stderr, "✗ %s — cannot update .git/info/exclude: %v\n", repoName, wErr)
-			continue
-		}
-
-		statusOut, gitErr := runGit(repo, "status", "--porcelain")
-		if gitErr != nil {
-			fmt.Printf("✓ %s — initialized (git status unavailable: %v)\n", repoName, gitErr)
-			continue
-		}
-		if strings.TrimSpace(statusOut) != "" {
-			fmt.Printf("✗ %s — initialized but git status not clean:\n%s\n", repoName, strings.TrimSpace(statusOut))
-			continue
-		}
-
-		fmt.Printf("✓ %s — .git/info/exclude updated, .context/ created\n", repoName)
+		fmt.Printf("✓ %s — .context/ created\n", repoName)
 	}
-}
-
-func isExcludeSet(repoPath string) bool {
-	data, err := os.ReadFile(filepath.Join(repoPath, ".git", "info", "exclude"))
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(data), excludeMarker)
 }
 
 func appendExclude(path string) error {
@@ -556,6 +591,7 @@ func runInventory(args []string) {
 	refresh := fs.Bool("refresh", false, "Only re-scan files changed since last inventory")
 	force := fs.Bool("force", false, "Full rescan even if inventory is current")
 	pull := fs.Bool("pull", false, "Run git pull before scanning")
+	semantic := fs.String("semantic", "auto", "Semantic analyzers: auto, required, or off")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: repo-context inventory <path> [flags]")
 		fmt.Fprintln(os.Stderr, "  Deep signal scan; writes inventory.db to each repo's .context/.")
@@ -579,6 +615,9 @@ func runInventory(args []string) {
 		repos = []string{basePath}
 	} else {
 		repos = findInitializedRepos(basePath)
+		if len(repos) == 0 && dirExists(basePath) {
+			repos = []string{basePath}
+		}
 	}
 
 	if len(repos) == 0 {
@@ -587,13 +626,13 @@ func runInventory(args []string) {
 	}
 
 	for _, repo := range repos {
-		if err := processRepo(repo, *format, *refresh, *force, *pull); err != nil {
+		if err := processRepo(repo, *format, *refresh, *force, *pull, *semantic); err != nil {
 			fmt.Fprintf(os.Stderr, "error processing %s: %v\n", filepath.Base(repo), err)
 		}
 	}
 }
 
-func processRepo(repoPath, format string, refresh, force, doPull bool) error {
+func processRepo(repoPath, format string, refresh, force, doPull bool, semantic string) error {
 	name := filepath.Base(repoPath)
 
 	if doPull {
@@ -627,6 +666,14 @@ func processRepo(repoPath, format string, refresh, force, doPull bool) error {
 	if err := writeInventoryDB(inv, dbPath); err != nil {
 		return fmt.Errorf("write db: %w", err)
 	}
+	if _, err := analyzers.Populate(analyzers.Options{
+		RepoPath: repoPath, DBPath: dbPath, Semantic: semantic, Inv: toHeuristicInv(inv, repoPath),
+	}); err != nil {
+		if strings.ToLower(semantic) == "required" {
+			return fmt.Errorf("semantic: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: semantic analysis: %v\n", err)
+	}
 
 	tocPath := filepath.Join(filepath.Dir(dbPath), "inventory-toc.json")
 	toc := buildTOC(inv)
@@ -640,9 +687,10 @@ func processRepo(repoPath, format string, refresh, force, doPull bool) error {
 	case "agent":
 		printInventoryAgent(inv)
 	default:
-		fmt.Printf("%s: written — stack=%s sha=%s signals=%d types=%d di=%d endpoints=%d events=%d\n",
+		fmt.Printf("%s: written — stack=%s sha=%s signals=%d types=%d di=%d endpoints=%d events=%d modules=%d deps=%d\n",
 			name, inv.Stack, inv.GitSha, len(inv.ComplexitySignals),
-			len(inv.TypeSymbols), len(inv.DIMappings), len(inv.Endpoints), len(inv.EventFlows))
+			len(inv.TypeSymbols), len(inv.DIMappings), len(inv.Endpoints), len(inv.EventFlows),
+			len(inv.Modules), len(inv.ModuleDeps))
 	}
 	return nil
 }
@@ -984,6 +1032,11 @@ func finalizeInventory(inv *Inventory) {
 	inv.ExternalDeps = uniqueSorted(inv.ExternalDeps)
 	sort.Strings(inv.EntryPoints)
 	inv.ProjectDeps = buildProjectDeps(inv)
+
+	fmt.Fprintf(os.Stderr, "  Building module graph...\n")
+	g := arch.BuildFromRepo(inv.Path, fitness.DefaultRules())
+	inv.Modules = g.Modules
+	inv.ModuleDeps = g.Deps
 }
 
 // ── Symbol extractors ────────────────────────────────────────────────────────
@@ -1344,11 +1397,16 @@ func extractTypeScriptEventFlows(text, rel string, inv *Inventory) {
 // ── SQLite DB operations ─────────────────────────────────────────────────────
 
 func openDB(dbPath string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := dbPath
+	if !strings.Contains(dsn, "?") {
+		dsn = dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"); err != nil {
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -1383,6 +1441,9 @@ func writeInventoryDB(inv *Inventory, dbPath string) error {
 
 	if _, err := db.Exec(schemaDDL); err != nil {
 		return fmt.Errorf("schema: %w", err)
+	}
+	if err := store.ApplyGraphSchema(db); err != nil {
+		return err
 	}
 
 	tx, err := db.Begin()
@@ -1518,7 +1579,48 @@ func writeInventoryDB(inv *Inventory, dbPath string) error {
 		efStmt.Exec(ef.File, ef.Direction, ef.Mechanism, ef.EventType, ef.Source)
 	}
 
+	// Modules
+	modStmt, _ := tx.Prepare("INSERT OR IGNORE INTO modules(id, kind, path, language, layer, abstract, namespace, drill_path, source) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	defer modStmt.Close()
+	extImpStmt, _ := tx.Prepare("INSERT OR IGNORE INTO module_ext_imports(module_id, package) VALUES(?, ?)")
+	defer extImpStmt.Close()
+	for _, m := range inv.Modules {
+		abs := 0
+		if m.Abstract {
+			abs = 1
+		}
+		modStmt.Exec(m.ID, m.Kind, m.Path, m.Language, m.Layer, abs, m.Namespace, m.DrillPath, m.Source)
+		for _, pkg := range m.ExtImports {
+			extImpStmt.Exec(m.ID, pkg)
+		}
+	}
+
+	mdStmt, _ := tx.Prepare("INSERT OR IGNORE INTO module_deps(from_id, to_id, kind, via_file) VALUES(?, ?, ?, ?)")
+	defer mdStmt.Close()
+	for _, d := range inv.ModuleDeps {
+		mdStmt.Exec(d.FromID, d.ToID, d.Kind, d.ViaFile)
+	}
+
 	return tx.Commit()
+}
+
+func toHeuristicInv(inv *Inventory, repoPath string) heuristic.Inventory {
+	h := heuristic.Inventory{RepoRoot: repoPath, Modules: inv.Modules, Deps: inv.ModuleDeps}
+	for _, t := range inv.TypeSymbols {
+		h.Types = append(h.Types, heuristic.Type{
+			Name: t.Name, Kind: t.Kind, File: t.File, Namespace: t.Namespace, Extends: t.Extends, Implements: t.Implements,
+		})
+	}
+	for _, d := range inv.DIMappings {
+		h.DI = append(h.DI, heuristic.DI{Interface: d.Interface, Implementation: d.Implementation, Lifetime: d.Lifetime, File: d.File})
+	}
+	for _, e := range inv.Endpoints {
+		h.Endpoints = append(h.Endpoints, heuristic.Endpoint{Route: e.Route, Method: e.Method, Handler: e.Handler, File: e.File, ReturnType: e.ReturnType})
+	}
+	for _, e := range inv.EventFlows {
+		h.Events = append(h.Events, heuristic.Event{File: e.File, Direction: e.Direction, Mechanism: e.Mechanism, EventType: e.EventType})
+	}
+	return h
 }
 
 func loadInventoryFromDB(dbPath string) *Inventory {
@@ -1751,6 +1853,47 @@ func loadInventoryFromDB(dbPath string) *Inventory {
 		}
 	}
 
+	// Modules
+	rows, err = db.Query("SELECT id, kind, path, language, layer, abstract, namespace, drill_path, source FROM modules")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var m modules.Module
+			var abs int
+			var layer, ns, drill sql.NullString
+			rows.Scan(&m.ID, &m.Kind, &m.Path, &m.Language, &layer, &abs, &ns, &drill, &m.Source)
+			m.Layer = layer.String
+			m.Namespace = ns.String
+			m.DrillPath = drill.String
+			m.Abstract = abs == 1
+			inv.Modules = append(inv.Modules, m)
+		}
+	}
+	extMap := map[string][]string{}
+	rows, err = db.Query("SELECT module_id, package FROM module_ext_imports")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, pkg string
+			rows.Scan(&id, &pkg)
+			extMap[id] = append(extMap[id], pkg)
+		}
+	}
+	for i := range inv.Modules {
+		inv.Modules[i].ExtImports = extMap[inv.Modules[i].ID]
+	}
+	rows, err = db.Query("SELECT from_id, to_id, kind, via_file FROM module_deps")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var d modules.Dep
+			var via sql.NullString
+			rows.Scan(&d.FromID, &d.ToID, &d.Kind, &via)
+			d.ViaFile = via.String
+			inv.ModuleDeps = append(inv.ModuleDeps, d)
+		}
+	}
+
 	return inv
 }
 
@@ -1789,6 +1932,8 @@ func buildTOC(inv *Inventory) *InventoryTOC {
 			DIMappings:        len(inv.DIMappings),
 			Endpoints:         len(inv.Endpoints),
 			EventFlows:        len(inv.EventFlows),
+			Modules:           len(inv.Modules),
+			ModuleDeps:        len(inv.ModuleDeps),
 		},
 	}
 }
@@ -1950,6 +2095,8 @@ ORDER BY t.kind, t.name`,
 	"di":        "SELECT interface, implementation, lifetime, file, source FROM di_mappings ORDER BY interface",
 	"endpoints": "SELECT route, method, handler, file, return_type, auth, source FROM endpoints ORDER BY file, route",
 	"events":    "SELECT file, direction, mechanism, event_type, source FROM event_flows ORDER BY mechanism, event_type, direction",
+	"modules":   "SELECT id, kind, path, language, layer, abstract, namespace, drill_path, source FROM modules ORDER BY language, layer, path",
+	"module-deps": "SELECT from_id, to_id, kind, via_file FROM module_deps ORDER BY from_id, to_id",
 }
 
 func runQuery(args []string) {
@@ -1966,7 +2113,7 @@ func runQuery(args []string) {
 		fmt.Fprintln(os.Stderr, "  If neither is provided, defaults to --section structure.")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  Sections: structure, signals, routes, messaging, triggers,")
-		fmt.Fprintln(os.Stderr, "            types, di, endpoints, events, all")
+		fmt.Fprintln(os.Stderr, "            types, di, endpoints, events, modules, module-deps, all")
 		fmt.Fprintln(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -2010,7 +2157,7 @@ func runQuery(args []string) {
 	}
 
 	if sec == "all" {
-		for _, s := range []string{"structure", "signals", "routes", "messaging", "triggers", "types", "di", "endpoints", "events"} {
+		for _, s := range []string{"structure", "signals", "routes", "messaging", "triggers", "types", "di", "endpoints", "events", "modules", "module-deps"} {
 			if *format == "table" || *format == "csv" {
 				fmt.Printf("── %s ──\n", s)
 			}
@@ -2932,6 +3079,142 @@ func maxInt(a, b int) int {
 
 // ── help ─────────────────────────────────────────────────────────────────────
 
+func runFitness(args []string) {
+	fs := flag.NewFlagSet("fitness", flag.ExitOnError)
+	format := fs.String("format", "json", "Output format: json (default), table")
+	rulesPath := fs.String("rules", "", "Path to arch-rules.json (default: <repo>/arch-rules.json if present)")
+	failOn := fs.String("fail-on", "error", "Exit 1 if findings at or above this severity: error, warning, info")
+	rescan := fs.Bool("rescan", false, "Rebuild module graph from source instead of reading inventory.db")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: repo-context fitness <path> [flags]")
+		fmt.Fprintln(os.Stderr, "  Architecture fitness reporter (cycles, layer violations, domain purity).")
+		fs.PrintDefaults()
+	}
+
+	pathArg, _ := parseSubArgs(fs, args)
+	if pathArg == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	repoPath, err := resolveRepoPath(pathArg)
+	if err != nil {
+		// Allow non-git paths (fixtures) — fall back to absolute path
+		repoPath, err = validatePath(pathArg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	rp := *rulesPath
+	if rp == "" {
+		rp = fitness.FindRulesFile(repoPath)
+	}
+	rules, rulesSrc, loadErr := fitness.LoadRules(rp)
+	if loadErr != nil && *rulesPath != "" {
+		fmt.Fprintf(os.Stderr, "error loading rules: %v\n", loadErr)
+		os.Exit(1)
+	}
+
+	var mods []modules.Module
+	var deps []modules.Dep
+	gitSha := strings.TrimSpace(runGitSilent(repoPath, "rev-parse", "--short", "HEAD"))
+	repoName := filepath.Base(repoPath)
+
+	dbPath := filepath.Join(repoPath, ".context", "inventory.db")
+	if !*rescan {
+		if inv := loadInventoryFromDB(dbPath); inv != nil && len(inv.Modules) > 0 {
+			mods = inv.Modules
+			deps = inv.ModuleDeps
+			if inv.GitSha != "" {
+				gitSha = inv.GitSha
+			}
+			if inv.Repo != "" {
+				repoName = inv.Repo
+			}
+		}
+	}
+	if len(mods) == 0 {
+		g := arch.BuildFromRepo(repoPath, rules)
+		mods = g.Modules
+		deps = g.Deps
+	}
+
+	report := fitness.Analyze(repoName, repoPath, gitSha, mods, deps, rules, rulesSrc)
+
+	switch *format {
+	case "table":
+		printFitnessTable(report)
+	default:
+		data, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(data))
+	}
+
+	if fitness.FailOn(report, *failOn) {
+		os.Exit(1)
+	}
+}
+
+func printFitnessTable(report fitness.Report) {
+	fmt.Printf("Fitness: %s  rules=%s  modules=%d  deps=%d  errors=%d  warnings=%d\n",
+		report.Repo, report.Rules, report.Summary.Modules, report.Summary.Deps,
+		report.Summary.Errors, report.Summary.Warnings)
+	if len(report.Cycles) > 0 {
+		fmt.Println("Cycles:")
+		for _, c := range report.Cycles {
+			fmt.Printf("  %s\n", c)
+		}
+	}
+	for _, f := range report.Findings {
+		fmt.Printf("[%s] %-16s %s\n", f.Severity, f.Kind, f.Message)
+	}
+}
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:8787", "Listen address")
+	staticDir := fs.String("static", "", "Optional path to arch-view SPA dist/")
+	rulesPath := fs.String("rules", "", "Optional arch-rules.json path")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: repo-context serve <path> [flags]")
+		fmt.Fprintln(os.Stderr, "  Serve inventory JSON APIs for the architecture viewer.")
+		fs.PrintDefaults()
+	}
+
+	pathArg, _ := parseSubArgs(fs, args)
+	if pathArg == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	repoPath, err := resolveRepoPath(pathArg)
+	if err != nil {
+		repoPath, err = validatePath(pathArg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	dbPath := filepath.Join(repoPath, ".context", "inventory.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error: no inventory.db at %s — run inventory first\n", dbPath)
+		os.Exit(1)
+	}
+
+	if err := serve.Run(serve.Options{
+		RepoPath:  repoPath,
+		DBPath:    dbPath,
+		StaticDir: *staticDir,
+		Addr:      *addr,
+		RulesPath: *rulesPath,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func printHelp() {
 	fmt.Print(`repo-context — pre-compute repository analysis signals for AI agents
 
@@ -2939,27 +3222,42 @@ USAGE:
     repo-context <subcommand> [flags]
 
 SUBCOMMANDS:
-    init <path>           Initialize analysis protection for git repos in <path>
+    init <path>           Create .context/ (add --protect only for analysis-only clones)
     inventory <path>      Deep signal scan; writes inventory.db + inventory-toc.json
     query <path>          Query inventory.db with SQL or predefined sections
+    fitness <path>        Architecture fitness report (cycles, layers, purity)
+    serve <path>          Local JSON API for the architecture viewer SPA
     index <path>          Show status table of all repos in <path>
     version               Print version string
     help                  Show this help
 
 FLAGS (init):
     --force               Re-initialize even if already done
+    --protect             Analysis-only clones: exclude all files from git
 
 FLAGS (inventory):
     --format string       Output format: json (default), table, agent
     --refresh             Re-scan only files changed since last inventory
     --force               Full rescan even if inventory is current
     --pull                Run git pull before scanning (explicit opt-in)
+    --semantic string     auto (default), required, or off
 
 FLAGS (query):
     --sql string          Raw SQL query against inventory.db
     --section string      Predefined query alias (see below)
     --min-score int       Min complexity score for signals section (default 3)
     --format string       Output format: json (default), table, csv
+
+FLAGS (fitness):
+    --format string       json (default) or table
+    --rules string        Path to arch-rules.json (optional guidance)
+    --fail-on string      Exit 1 if findings ≥ severity (default: error)
+    --rescan              Rebuild module graph from source (ignore inventory.db)
+
+FLAGS (serve):
+    --addr string         Listen address (default 127.0.0.1:8787)
+    --static string       Optional arch-view dist/ directory
+    --rules string        Optional arch-rules.json
 
 QUERY SECTIONS:
     structure             Metadata, projects, deps, entry points, file counts
@@ -2971,26 +3269,29 @@ QUERY SECTIONS:
     di                    DI mappings (interface → implementation)
     endpoints             Detailed endpoint signatures
     events                Event flow topology (pub/sub across stacks)
+    modules               Architecture module graph nodes
+    module-deps           Architecture module dependency edges
     all                   All sections
-
-FLAGS (index):
-    --format string       Output format: table (default), json, agent
 
 EXAMPLES:
     repo-context init ./repos
     repo-context inventory ./repos --format table
     repo-context inventory ./repos --refresh
 
-    repo-context query ./repos/MyRepo --section signals --min-score 2
+    repo-context fitness ./repos/MyRepo --format table
+    repo-context fitness ./repos/MyRepo --rules ./arch-rules.json --fail-on error
+
+    repo-context serve ./repos/MyRepo --static ../arch-view/dist
+
+    repo-context query ./repos/MyRepo --section modules
     repo-context query ./repos/MyRepo --section types
-    repo-context query ./repos/MyRepo --section events
     repo-context query ./repos/MyRepo --sql "SELECT * FROM types WHERE kind = 'interface'"
-    repo-context query ./repos/MyRepo --sql "SELECT t.name, t.file FROM types t JOIN type_implements ti ON t.name = ti.type_name WHERE ti.interface = 'IOrderService'"
 
     repo-context index ./repos
 
 STORAGE:
     inventory.db          SQLite database (primary store, queryable)
     inventory-toc.json    Lightweight summary (~1-3KB, for quick agent reads)
+    arch-rules.json       Optional layer/purity guidance (repo root)
 `)
 }

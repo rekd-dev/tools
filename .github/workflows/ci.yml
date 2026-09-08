@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Go tests
+        working-directory: repo-context-cli
+        run: go test ./...
+      - name: Go build
+        working-directory: repo-context-cli
+        run: go build -o ../bin/repo-context .
+      - name: TypeScript analyzer install
+        working-directory: repo-context-cli/analyzers/typescript
+        run: npm install
+      - name: Viewer install and test
+        working-directory: arch-view
+        run: |
+          npm ci
+          npm test
+          npm run build
