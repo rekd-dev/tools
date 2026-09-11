@@ -24,7 +24,7 @@ func Search(g model.Graph, q string, limit int) []Hit {
 	if limit <= 0 {
 		limit = 40
 	}
-	var hits []Hit
+	hits := make([]Hit, 0)
 	for _, n := range g.Nodes {
 		score := scoreNode(n, q)
 		if score <= 0 {
@@ -49,20 +49,28 @@ func scoreNode(n model.Node, q string) float64 {
 	qual := strings.ToLower(n.QualifiedName)
 	id := strings.ToLower(n.ID)
 	file := strings.ToLower(n.File)
+	base := 0.0
 	switch {
 	case name == q:
-		return 10
+		base = 10
 	case strings.HasPrefix(name, q):
-		return 7
+		base = 7
 	case strings.Contains(name, q):
-		return 5
+		base = 5
 	case strings.Contains(qual, q):
-		return 4
+		base = 4
 	case strings.Contains(id, q):
-		return 3
+		base = 3
 	case strings.Contains(file, q):
-		return 2
+		base = 2
 	default:
 		return 0
 	}
+	switch n.Kind {
+	case model.KindEndpoint:
+		base += 3
+	case model.KindType:
+		base += 1
+	}
+	return base
 }

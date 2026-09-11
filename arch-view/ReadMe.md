@@ -35,11 +35,11 @@ Open http://localhost:5190 (`vite` proxies `/api` to the serve process).
 
 ## Lenses
 
-- **Architecture** — outer-to-inner drill. Single-click selects, double-click drills into folders.
+- **Architecture** — outer-to-inner drill, optional **Matrix** (DSM) and **Churn** (90-day git heat). Single-click selects, double-click drills into folders.
 - **Focus** — neighborhood around a type/interface: implementers, DI bindings, constructor injection, consumers, evidence.
-- **Flow** — bounded static call path from an endpoint or symbol. **Data** and **Async** overlays stay on the same selection.
+- **Flow** — bounded static call path from an endpoint or symbol. Default path is the call/persistence spine; **Data**, **Async**, and **Deps** overlays stay on the same selection. Layout uses ELK left-to-right when available.
 
-Shareable URL hash restores `lens`, `path`, `sel`, and overlays. Architecture drill-down uses `/api/view`; Focus/Flow use `/api/graph-view?lens=focus|flow&sel=&path=&overlays=`.
+Shareable URL hash restores `lens`, `path`, `sel`, `view=matrix`, and overlays (`data`, `async`, `deps`, `churn`). Architecture drill-down uses `/api/view`; Focus/Flow use `/api/graph-view?lens=focus|flow&sel=&path=&overlays=`.
 
 ## Production-ish local
 
@@ -63,3 +63,5 @@ Then open http://127.0.0.1:8787
 ## Fitness panel
 
 Loaded from `/api/fitness` — same JSON as `repo-context fitness --format json`. Clicking an edge or finding opens the source line when the fact includes file/line evidence.
+
+Source opens in a full-width pane under the graph (drag the top edge to resize). Highlighting uses the VS Code Dark+ grammar.

@@ -25,27 +25,27 @@ type Options struct {
 
 type ndjsonRec struct {
 	V          int               `json:"v"`
-	Kind       string             `json:"kind"`
-	ID         string             `json:"id"`
-	NodeKind   string             `json:"nodeKind"`
-	Name       string             `json:"name"`
-	Qualified  string             `json:"qualifiedName"`
-	Language   string             `json:"language"`
-	File       string             `json:"file"`
+	Kind       string            `json:"kind"`
+	ID         string            `json:"id"`
+	NodeKind   string            `json:"nodeKind"`
+	Name       string            `json:"name"`
+	Qualified  string            `json:"qualifiedName"`
+	Language   string            `json:"language"`
+	File       string            `json:"file"`
 	Line       int               `json:"line"`
 	Column     int               `json:"column"`
 	Abstract   bool              `json:"abstract"`
 	Extra      map[string]string `json:"extra"`
-	From       string             `json:"from"`
-	To         string             `json:"to"`
-	EdgeKind   string             `json:"edgeKind"`
-	Source     string             `json:"source"`
+	From       string            `json:"from"`
+	To         string            `json:"to"`
+	EdgeKind   string            `json:"edgeKind"`
+	Source     string            `json:"source"`
 	Confidence float64           `json:"confidence"`
-	Analyzer   string             `json:"analyzer"`
-	Detail     string             `json:"detail"`
+	Analyzer   string            `json:"analyzer"`
+	Detail     string            `json:"detail"`
 	Unresolved bool              `json:"unresolved"`
-	Status     string             `json:"status"`
-	Message    string             `json:"message"`
+	Status     string            `json:"status"`
+	Message    string            `json:"message"`
 }
 
 func Populate(opts Options) (model.Graph, error) {
@@ -154,7 +154,7 @@ func runSidecar(name, repo string) (model.Graph, error) {
 		return model.Graph{}, fmt.Errorf("unknown analyzer %s", name)
 	}
 	cmd.Stderr = os.Stderr
-	out, err := cmdStdout(cmd, 2*time.Minute)
+	out, err := cmdStdout(cmd, 15*time.Minute)
 	if err != nil {
 		return model.Graph{}, err
 	}

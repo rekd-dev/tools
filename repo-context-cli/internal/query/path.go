@@ -7,18 +7,20 @@ import (
 )
 
 type PathRequest struct {
-	From      string
-	To        string
-	MaxDepth  int
-	Kinds     []string
-	MaxNodes  int
+	From           string
+	To             string
+	MaxDepth       int
+	Kinds          []string
+	MaxNodes       int
+	MinConfidence  float64
+	SkipUnresolved bool
 }
 
 type PathResult struct {
-	Nodes []model.Node `json:"nodes"`
-	Edges []model.Edge `json:"edges"`
-	Truncated bool     `json:"truncated,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
+	Nodes     []model.Node `json:"nodes"`
+	Edges     []model.Edge `json:"edges"`
+	Truncated bool         `json:"truncated,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
 }
 
 func BoundedPath(g model.Graph, req PathRequest) PathResult {
@@ -66,8 +68,17 @@ func BoundedPath(g model.Graph, req PathRequest) PathResult {
 		depth int
 	}
 	queue := []step{{req.From, 0}}
-	var edges []model.Edge
+	edges := []model.Edge{}
 	truncated := false
+	walk := func(e model.Edge) bool {
+		if req.SkipUnresolved && e.Unresolved {
+			return false
+		}
+		if req.MinConfidence > 0 && e.Confidence > 0 && e.Confidence < req.MinConfidence {
+			return false
+		}
+		return true
+	}
 
 	for len(queue) > 0 {
 		cur := queue[0]
@@ -76,6 +87,9 @@ func BoundedPath(g model.Graph, req PathRequest) PathResult {
 			continue
 		}
 		for _, e := range out[cur.id] {
+			if !walk(e) {
+				continue
+			}
 			if req.To != "" && e.ToID == req.To {
 				edges = append(edges, e)
 				seen[e.ToID] = true
@@ -95,8 +109,7 @@ func BoundedPath(g model.Graph, req PathRequest) PathResult {
 	}
 
 	if req.To != "" {
-		filtered := reachableTo(req.From, req.To, edges)
-		edges = filtered
+		edges = reachableTo(req.From, req.To, edges)
 		seen = map[string]bool{}
 		for _, e := range edges {
 			seen[e.FromID] = true
@@ -145,7 +158,7 @@ func reachableTo(from, to string, edges []model.Edge) []model.Edge {
 
 func uniqueEdges(in []model.Edge) []model.Edge {
 	seen := map[string]bool{}
-	var out []model.Edge
+	out := []model.Edge{}
 	for _, e := range in {
 		if seen[e.ID] {
 			continue

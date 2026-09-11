@@ -1,8 +1,14 @@
 @import "tailwindcss";
 @source "./**/*.{ts,tsx}";
 
-body {
+html,
+body,
+#root {
+  height: 100%;
   margin: 0;
+}
+
+body {
   font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
   font-size: 14px;
 }
@@ -10,6 +16,51 @@ body {
 .react-flow__edge.cycle .react-flow__edge-path {
   stroke: #f87171;
 }
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #38bdf8;
+  stroke-width: 2.5;
+}
 .react-flow__attribution {
   display: none;
+}
+
+.source-pane .shiki {
+  margin: 0;
+  padding: 8px 0 16px;
+  background: #1e1e1e !important;
+  font-size: 12px;
+  line-height: 1.55;
+  min-width: max-content;
+}
+
+.source-pane .shiki code {
+  display: grid;
+  counter-reset: line;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.source-pane .shiki .line {
+  display: inline-block;
+  min-width: 100%;
+  padding: 0 16px 0 0;
+}
+
+.source-pane .shiki .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 3.5rem;
+  margin-right: 1rem;
+  padding-right: 0.75rem;
+  text-align: right;
+  color: #6b7280;
+  user-select: none;
+}
+
+.source-pane .source-line-active {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.source-pane .source-line-active::before {
+  color: #e4e4e7;
 }

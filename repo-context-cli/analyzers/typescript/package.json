@@ -2,6 +2,9 @@
   "name": "repo-context-ts-analyzer",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node test/p0-graph-quality.mjs"
+  },
   "dependencies": {
     "typescript": "^5.7.2"
   }

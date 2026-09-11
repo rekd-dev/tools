@@ -7,9 +7,13 @@ export type ViewNode = {
   abstract: boolean
   cycle: boolean
   path?: string
+  fileRoot?: string
   kind?: string
   source?: string
   line?: number
+  churnCommits?: number
+  churnAuthors?: number
+  churnLast?: string
 }
 
 export type ViewEdge = {
@@ -31,8 +35,40 @@ export type GraphEdge = {
   detail?: string
 }
 
+export type EdgeEvidence = {
+  source: string
+  confidence?: number
+  analyzer?: string
+  file?: string
+  line?: number
+  snippet?: string
+  detail?: string
+}
+
+export type EdgeDetail = GraphEdge & {
+  fromId?: string
+  toId?: string
+  analyzer?: string
+  evidence?: EdgeEvidence[]
+}
+
+export type RelationPick = {
+  id?: string
+  from: string
+  to: string
+  kind?: string
+  file?: string
+  line?: number
+  unresolved?: boolean
+  source?: string
+  detail?: string
+  confidence?: number
+  evidence?: EdgeEvidence[]
+}
+
 export type View = {
   path: string
+  fileRoot?: string
   nodes: ViewNode[]
   edges: ViewEdge[]
   cycles: string[]
@@ -67,6 +103,7 @@ export type Finding = {
   to?: string
   layer?: string
   cycle?: string
+  relatedCount?: number
 }
 
 export type FitnessReport = {
@@ -90,6 +127,18 @@ export type FitnessReport = {
 
 export type Meta = Record<string, string>
 
+export type ChurnStat = {
+  commits: number
+  authors: number
+  last?: string
+}
+
+export type ChurnReport = {
+  since: string
+  message?: string
+  nodes: Record<string, ChurnStat>
+}
+
 export type SearchHit = {
   id: string
   kind: string
@@ -100,7 +149,7 @@ export type SearchHit = {
 }
 
 export type EntityDetail = {
-  node: ViewNode & { name?: string; file?: string; extra?: Record<string, string> }
+  node: ViewNode & { name?: string; file?: string; layer?: string; extra?: Record<string, string> }
   incoming: GraphEdge[]
   outgoing: GraphEdge[]
   implementers?: { id: string; name?: string; label?: string; file?: string }[]

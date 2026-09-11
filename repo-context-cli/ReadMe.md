@@ -9,7 +9,8 @@ Pre-computes repository analysis signals so AI agents can understand a codebase 
 3. `query` — SQL-powered query interface for the inventory database (raw SQL or predefined section aliases)
 4. `fitness` — architecture fitness reporter (cycles, Clean Architecture layer violations, domain purity); JSON contract for CI + the viewer
 5. `serve` — local HTTP API over `inventory.db` for the separate `arch-view` SPA
-6. `index` — shows current vs stale status across all repos at a glance
+6. `mcp` — MCP stdio server over the same graph (search, entity, view, graph_view, fitness, path, meta)
+7. `index` — shows current vs stale status across all repos at a glance
 
 An agent can use `repo-context query --sql "..."` for precise lookups, `--section <name>` for broad overviews, or load `inventory-toc.json` (~1–3KB) for a lightweight summary.
 
@@ -207,9 +208,33 @@ repo-context serve ./repos/MyRepo --rules ./arch-rules.json
 
 **Flags:** `--addr` (default `127.0.0.1:8787`), `--static` (optional `arch-view` `dist/`), `--rules` (optional `arch-rules.json`).
 
-**Endpoints:** `/api/health`, `/api/meta`, `/api/modules`, `/api/module-deps`, `/api/fitness`, `/api/view?path=`, `/api/source?file=`, `/api/search?q=`, `/api/entity?id=`, `/api/edge?id=`, `/api/path?from=&to=&maxDepth=&maxNodes=&kinds=`, `/api/graph-view?lens=architecture|focus|flow&path=&sel=&overlays=`, `/api/coverage`
+**Endpoints:** `/api/health`, `/api/meta`, `/api/modules`, `/api/module-deps`, `/api/fitness`, `/api/view?path=`, `/api/source?file=`, `/api/search?q=`, `/api/entity?id=`, `/api/edge?id=`, `/api/path?from=&to=&maxDepth=&maxNodes=&kinds=`, `/api/graph-view?lens=architecture|focus|flow&path=&sel=&overlays=`, `/api/coverage`, `/api/churn?path=`
 
-`/api/graph-view` lenses: `architecture` (module drill-down still uses `/api/view`), `focus` (neighborhood around `sel`), `flow` (bounded path from `sel`). The SPA hash restores `lens`, `path`, `sel`, and overlays (`data`, `async`).
+`/api/graph-view` lenses: `architecture` (module drill-down still uses `/api/view`), `focus` (neighborhood around `sel`), `flow` (bounded path from `sel`). Flow overlays: `data` (persistence writes/reads), `async` (awaits/forks), `deps` (constructor injects that the default spine hides). `/api/churn` maps 90 days of `git log` onto the current architecture boxes. The SPA hash restores `lens`, `path`, `sel`, overlays (`data`, `async`, `deps`, `churn`), and `view=matrix` for the architecture DSM.
+
+### `mcp <path>`
+
+MCP stdio server over `inventory.db`. Same projections as `serve`, for agent clients.
+
+```bash
+repo-context mcp ./repos/MyRepo
+repo-context mcp ./repos/MyRepo --rules ./arch-rules.json
+```
+
+**Tools:** `search`, `entity`, `view`, `graph_view` (`focus` or `flow`; overlays `data,async,deps`), `fitness`, `path`, `meta`.
+
+Example Cursor MCP config:
+
+```json
+{
+  "mcpServers": {
+    "repo-context": {
+      "command": "R:\\Projects\\tools\\bin\\repo-context.exe",
+      "args": ["mcp", "/path/to/your-repo"]
+    }
+  }
+}
+```
 
 ### `index <path>`
 

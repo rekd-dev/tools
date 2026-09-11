@@ -21,7 +21,7 @@ Global agent configuration loaded by all projects via `CLAUDE.md`.
 
 Go CLI that pre-computes repository analysis signals into a SQLite database so AI agents can understand a codebase without reading thousands of source files.
 
-**Subcommands:** `init`, `inventory`, `query`, `fitness`, `serve`, `index`
+**Subcommands:** `init`, `inventory`, `query`, `fitness`, `serve`, `mcp`, `index`
 
 `inventory --semantic=auto` (default) runs TypeScript/Roslyn sidecars when they are installed; `init --protect` is only for analysis-only clones (appends `*` to `.git/info/exclude`).
 
@@ -46,6 +46,7 @@ npm run dev          # proxies /api to http://127.0.0.1:8787
 # with backend:
 #   repo-context inventory <repo> --force --semantic=auto
 #   repo-context serve <repo>
+#   repo-context mcp <repo>     # stdio MCP for agents
 ```
 
 Deferred research features: [docs/backlog.md](docs/backlog.md).

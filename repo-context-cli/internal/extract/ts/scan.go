@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	importFromRe = regexp.MustCompile(`(?m)(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?)\s+from\s+['"]([^'"]+)['"]`)
+	importFromRe = regexp.MustCompile(`(?m)(?:import|export)\s+(?:(type)\s+)?(?:[\s\S]*?)\s+from\s+['"]([^'"]+)['"]`)
 	importSideRe = regexp.MustCompile(`(?m)^\s*import\s+['"]([^'"]+)['"]`)
 	requireRe    = regexp.MustCompile(`require\(\s*['"]([^'"]+)['"]\s*\)`)
 	abstractRe   = regexp.MustCompile(`(?m)export\s+(?:type\s+|interface\s+|abstract\s+class\s+)`)
@@ -34,7 +34,7 @@ func Scan(repoRoot string, aliases []PathAlias, packageRoots map[string]string, 
 	repoRoot = filepath.Clean(repoRoot)
 	fileIndex := map[string]bool{} // slash-rel path without extension variants keyed by resolved id
 	var mods []modules.Module
-	pending := map[string][]string{} // module id -> import specs
+	pending := map[string][]importSpec{} // module id -> import specs
 
 	_ = filepath.Walk(repoRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -82,12 +82,12 @@ func Scan(repoRoot string, aliases []PathAlias, packageRoots map[string]string, 
 
 		specs := extractImportSpecs(text)
 		var extImps []string
-		var local []string
+		var local []importSpec
 		for _, spec := range specs {
-			if isRelativeOrAlias(spec, aliases) || isWorkspacePkg(spec, packageRoots) {
+			if isRelativeOrAlias(spec.Spec, aliases) || isWorkspacePkg(spec.Spec, packageRoots) {
 				local = append(local, spec)
-			} else if isExternalPkg(spec) {
-				pkg := packageName(spec)
+			} else if isExternalPkg(spec.Spec) {
+				pkg := packageName(spec.Spec)
 				extImps = append(extImps, pkg)
 			}
 		}
@@ -109,33 +109,37 @@ func Scan(repoRoot string, aliases []PathAlias, packageRoots map[string]string, 
 	}
 
 	var deps []modules.Dep
-	seen := map[string]bool{}
+	seen := map[string]int{} // key -> index in deps; value import wins over type-only
 	for from, specs := range pending {
 		fromDir := filepath.ToSlash(filepath.Dir(from))
 		for _, spec := range specs {
-			target := resolveSpec(spec, fromDir, aliases, packageRoots, byStem)
+			target := resolveSpec(spec.Spec, fromDir, aliases, packageRoots, byStem)
 			if target == "" || target == from {
 				continue
 			}
 			key := from + "\x00" + target
-			if seen[key] {
+			if idx, ok := seen[key]; ok {
+				if deps[idx].TypeOnly && !spec.TypeOnly {
+					deps[idx].TypeOnly = false
+				}
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(deps)
 			kind := "direct"
 			deps = append(deps, modules.Dep{
-				FromID:  from,
-				ToID:    target,
-				Kind:    kind,
-				ViaFile: from,
+				FromID:   from,
+				ToID:     target,
+				Kind:     kind,
+				ViaFile:  from,
+				TypeOnly: spec.TypeOnly,
 			})
 		}
 		for _, pkg := range modsExt(mods, from) {
 			key := from + "\x00ext:" + pkg
-			if seen[key] {
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(deps)
 			deps = append(deps, modules.Dep{
 				FromID:  from,
 				ToID:    "ext:" + pkg,
@@ -157,16 +161,21 @@ func modsExt(mods []modules.Module, id string) []string {
 	return nil
 }
 
-func extractImportSpecs(text string) []string {
-	var out []string
+type importSpec struct {
+	Spec     string
+	TypeOnly bool
+}
+
+func extractImportSpecs(text string) []importSpec {
+	var out []importSpec
 	for _, m := range importFromRe.FindAllStringSubmatch(text, -1) {
-		out = append(out, m[1])
+		out = append(out, importSpec{Spec: m[2], TypeOnly: m[1] == "type"})
 	}
 	for _, m := range importSideRe.FindAllStringSubmatch(text, -1) {
-		out = append(out, m[1])
+		out = append(out, importSpec{Spec: m[1]})
 	}
 	for _, m := range requireRe.FindAllStringSubmatch(text, -1) {
-		out = append(out, m[1])
+		out = append(out, importSpec{Spec: m[1]})
 	}
 	return out
 }

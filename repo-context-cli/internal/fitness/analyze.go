@@ -20,14 +20,15 @@ const (
 
 // Finding is one architecture fitness issue.
 type Finding struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"` // cycle | layer_violation | domain_purity | unlayered
-	Severity string `json:"severity"`
-	Message  string `json:"message"`
-	From     string `json:"from,omitempty"`
-	To       string `json:"to,omitempty"`
-	Layer    string `json:"layer,omitempty"`
-	Cycle    string `json:"cycle,omitempty"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"` // cycle | layer_violation | layer_violation_type | domain_purity | unlayered
+	Severity     string `json:"severity"`
+	Message      string `json:"message"`
+	From         string `json:"from,omitempty"`
+	To           string `json:"to,omitempty"`
+	Layer        string `json:"layer,omitempty"`
+	Cycle        string `json:"cycle,omitempty"`
+	RelatedCount int    `json:"relatedCount,omitempty"`
 }
 
 // Report is the fitness JSON contract (viewer + CI).
@@ -103,6 +104,12 @@ func DefaultRules() Rules {
 				"Microsoft.EntityFrameworkCore", "Microsoft.AspNetCore",
 			},
 		},
+		Ignore: []string{
+			"**/*.test.ts", "**/*.test.tsx",
+			"**/*.spec.ts", "**/*.spec.tsx",
+			"**/test/**", "**/tests/**", "**/__tests__/**",
+			"**/e2e/**", "**/playwright/**",
+		},
 		UnlayeredSeverity: SeverityWarning,
 	}
 }
@@ -146,6 +153,7 @@ func AssignLayers(mods []modules.Module, rules Rules) []modules.Module {
 	out := make([]modules.Module, len(mods))
 	copy(out, mods)
 	for i := range out {
+		out[i].Layer = ""
 		if ignored(out[i].Path, rules.Ignore) {
 			continue
 		}
@@ -278,9 +286,15 @@ func ignored(path string, globs []string) bool {
 
 // Analyze runs all fitness checks.
 func Analyze(repo, path, gitSha string, mods []modules.Module, deps []modules.Dep, rules Rules, rulesSource string) Report {
+	for i := range deps {
+		deps[i].HydrateTypeOnly()
+	}
 	mods = AssignLayers(mods, rules)
 	byID := map[string]modules.Module{}
 	for _, m := range mods {
+		if ignored(m.Path, rules.Ignore) {
+			continue
+		}
 		byID[m.ID] = m
 	}
 
@@ -295,10 +309,16 @@ func Analyze(repo, path, gitSha string, mods []modules.Module, deps []modules.De
 	var nodes []string
 	var edges []graph.Edge
 	for _, m := range mods {
+		if ignored(m.Path, rules.Ignore) {
+			continue
+		}
 		nodes = append(nodes, m.ID)
 	}
 	for _, d := range deps {
 		if d.Kind == "external" || strings.HasPrefix(d.ToID, "ext:") {
+			continue
+		}
+		if d.TypeOnly {
 			continue
 		}
 		if _, ok := byID[d.FromID]; !ok {
@@ -324,6 +344,8 @@ func Analyze(repo, path, gitSha string, mods []modules.Module, deps []modules.De
 	}
 
 	// Layer violations
+	compositionGroups := map[string]int{}
+	layerHits := 0
 	for _, d := range deps {
 		if d.Kind == "external" || strings.HasPrefix(d.ToID, "ext:") {
 			continue
@@ -337,10 +359,32 @@ func Analyze(repo, path, gitSha string, mods []modules.Module, deps []modules.De
 			continue
 		}
 		if !allowedEdge(from.Layer, to.Layer, rules) {
+			layerHits++
+			kind := "layer_violation"
+			sev := SeverityError
+			if d.TypeOnly {
+				kind = "layer_violation_type"
+				sev = SeverityInfo
+			}
+			if to.Layer == "composition" {
+				key := from.Layer + "\x00" + to.ID + "\x00" + kind
+				if index, ok := compositionGroups[key]; ok {
+					finding := &findings[index]
+					if finding.RelatedCount == 0 {
+						finding.RelatedCount = 2
+					} else {
+						finding.RelatedCount++
+					}
+					finding.Message = from.Layer + " must not depend on " + to.Layer + ": " +
+						itoa(finding.RelatedCount) + " imports → " + to.Path
+					continue
+				}
+				compositionGroups[key] = len(findings)
+			}
 			findings = append(findings, Finding{
 				ID:       nextID("layer"),
-				Kind:     "layer_violation",
-				Severity: SeverityError,
+				Kind:     kind,
+				Severity: sev,
 				Message:  from.Layer + " must not depend on " + to.Layer + ": " + from.Path + " → " + to.Path,
 				From:     from.ID,
 				To:       to.ID,
@@ -401,13 +445,13 @@ func Analyze(repo, path, gitSha string, mods []modules.Module, deps []modules.De
 		return findings[i].Kind < findings[j].Kind
 	})
 
-	sum := Summary{Modules: len(mods), Deps: len(deps), Cycles: len(cycleStrs)}
+	sum := Summary{Modules: len(mods), Deps: len(deps), Cycles: len(cycleStrs), LayerHits: layerHits}
 	briefs := make([]ModuleBrief, 0, len(mods))
 	for _, m := range mods {
 		briefs = append(briefs, ModuleBrief{
 			ID: m.ID, Path: m.Path, Language: m.Language, Layer: m.Layer, Abstract: m.Abstract,
 		})
-		if m.Layer == "" {
+		if m.Layer == "" && !ignored(m.Path, rules.Ignore) {
 			sum.Unlayered++
 		}
 	}
@@ -419,8 +463,6 @@ func Analyze(repo, path, gitSha string, mods []modules.Module, deps []modules.De
 			sum.Warnings++
 		}
 		switch f.Kind {
-		case "layer_violation":
-			sum.LayerHits++
 		case "domain_purity":
 			sum.Purity++
 		}

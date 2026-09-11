@@ -42,6 +42,30 @@ func TestProjectViewDrillKeepsChildren(t *testing.T) {
 	}
 }
 
+func TestProjectViewFileRootIsPackageDir(t *testing.T) {
+	g := modules.Graph{
+		Modules: []modules.Module{
+			{ID: "a", Path: "packages/auth/src/cookie.ts", Language: "typescript", DrillPath: "auth/cookie"},
+			{ID: "b", Path: "packages/auth/src/jwt.ts", Language: "typescript", DrillPath: "auth/jwt"},
+			{ID: "c", Path: "apps/schedule-api/src/http/routes/auth.ts", Language: "typescript", DrillPath: "schedule-api/http/routes/auth"},
+		},
+	}
+	v := projectView(g, "auth")
+	if v.FileRoot != "packages/auth/src" {
+		t.Fatalf("view fileRoot=%q", v.FileRoot)
+	}
+	got := map[string]string{}
+	for _, n := range v.Nodes {
+		got[n.ID] = n.FileRoot
+	}
+	if got["cookie"] != "packages/auth/src/cookie.ts" {
+		t.Fatalf("cookie fileRoot=%q", got["cookie"])
+	}
+	if _, ok := got["routes"]; ok {
+		t.Fatal("schedule-api auth route leaked into auth package view")
+	}
+}
+
 func TestProjectViewPackagesAtRoot(t *testing.T) {
 	g := modules.Graph{
 		Modules: []modules.Module{

@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"repo-context-cli/internal/churn"
 	"repo-context-cli/internal/fitness"
 	"repo-context-cli/internal/graph"
 	"repo-context-cli/internal/model"
@@ -142,11 +144,51 @@ type graphHub struct {
 	mu          sync.Mutex
 	cached      *modules.Graph
 	cachedFacts *model.Graph
+	dbStamp     dbStamp
+	churnMu     sync.Mutex
+	churnRaw    string
+	churnAt     time.Time
+	churnErr    error
+}
+
+type dbStamp struct {
+	mod  time.Time
+	size int64
+}
+
+func stampFile(path string) (dbStamp, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return dbStamp{}, err
+	}
+	return dbStamp{mod: st.ModTime(), size: st.Size()}, nil
+}
+
+func (a dbStamp) matches(b dbStamp) bool {
+	return !a.mod.IsZero() && a.mod.Equal(b.mod) && a.size == b.size
+}
+
+func (h *graphHub) dropStaleCache() {
+	if h.dbPath == "" {
+		return
+	}
+	st, err := stampFile(h.dbPath)
+	if err != nil || !st.matches(h.dbStamp) {
+		h.cached = nil
+		h.cachedFacts = nil
+	}
+}
+
+func (h *graphHub) rememberStamp() {
+	if st, err := stampFile(h.dbPath); err == nil {
+		h.dbStamp = st
+	}
 }
 
 func (h *graphHub) graph() (modules.Graph, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.dropStaleCache()
 	if h.cached != nil {
 		return *h.cached, nil
 	}
@@ -155,7 +197,21 @@ func (h *graphHub) graph() (modules.Graph, error) {
 		return modules.Graph{}, err
 	}
 	h.cached = &g
+	h.rememberStamp()
 	return g, nil
+}
+
+func (h *graphHub) churnReport(roots []churn.Root) churn.Report {
+	h.churnMu.Lock()
+	defer h.churnMu.Unlock()
+	if h.churnAt.IsZero() || time.Since(h.churnAt) > churn.CacheTTL() {
+		raw, err := churn.GitRunner(h.repoPath, "log", "--since="+churn.DefaultSince, "--pretty=format:COMMIT\t%an\t%ad", "--date=short", "--name-only")
+		h.churnRaw, h.churnErr, h.churnAt = raw, err, time.Now()
+	}
+	if h.churnErr != nil {
+		return churn.Report{Since: churn.DefaultSince, Nodes: map[string]churn.Stat{}, Message: h.churnErr.Error()}
+	}
+	return churn.Report{Since: churn.DefaultSince, Nodes: churn.ParseLog(h.churnRaw, roots)}
 }
 
 func loadGraph(dbPath, repoPath string) (modules.Graph, error) {
@@ -213,6 +269,7 @@ func loadGraph(dbPath, repoPath string) (modules.Graph, error) {
 		var via sql.NullString
 		drows.Scan(&d.FromID, &d.ToID, &d.Kind, &via)
 		d.ViaFile = via.String
+		d.HydrateTypeOnly()
 		g.Deps = append(g.Deps, d)
 	}
 	return g, nil
@@ -248,6 +305,7 @@ type ViewNode struct {
 	Abstract  bool   `json:"abstract"`
 	Cycle     bool   `json:"cycle"`
 	Path      string `json:"path,omitempty"`
+	FileRoot  string `json:"fileRoot,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 	Source    string `json:"source,omitempty"`
 	Line      int    `json:"line,omitempty"`
@@ -263,6 +321,7 @@ type ViewEdge struct {
 // View is the drill-down projection.
 type View struct {
 	Path       string     `json:"path"`
+	FileRoot   string     `json:"fileRoot,omitempty"`
 	Nodes      []ViewNode `json:"nodes"`
 	Edges      []ViewEdge `json:"edges"`
 	Cycles     []string   `json:"cycles"`
@@ -314,7 +373,7 @@ func projectView(g modules.Graph, prefix string) View {
 		}
 		nodes = append(nodes, ViewNode{
 			ID: child, Label: child, Leaf: leaf, Abstract: abs,
-			ArchLayer: arch, Path: path,
+			ArchLayer: arch, Path: path, FileRoot: commonFileRoot(ms, leaf),
 		})
 		nodeIDs[child] = true
 	}
@@ -373,13 +432,50 @@ func projectView(g modules.Graph, prefix string) View {
 		children = append(children, modules.JoinDrillPath(append(append([]string{}, prefixParts...), c)...))
 	}
 
+	var viewMods []modules.Module
+	for _, ms := range childMods {
+		viewMods = append(viewMods, ms...)
+	}
 	return View{
 		Path:       prefix,
+		FileRoot:   commonFileRoot(viewMods, false),
 		Nodes:      nodes,
 		Edges:      edges,
 		Cycles:     cycles,
 		ChildPaths: children,
 	}
+}
+
+func commonFileRoot(ms []modules.Module, leaf bool) string {
+	if len(ms) == 0 {
+		return ""
+	}
+	if leaf && len(ms) == 1 {
+		return filepath.ToSlash(ms[0].Path)
+	}
+	parts := strings.Split(filepath.ToSlash(ms[0].Path), "/")
+	for _, m := range ms[1:] {
+		other := strings.Split(filepath.ToSlash(m.Path), "/")
+		n := len(parts)
+		if len(other) < n {
+			n = len(other)
+		}
+		i := 0
+		for i < n && parts[i] == other[i] {
+			i++
+		}
+		parts = parts[:i]
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	if len(ms) > 1 || !leaf {
+		if strings.Contains(last, ".") {
+			parts = parts[:len(parts)-1]
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 func hasPrefix(parts, prefix []string) bool {

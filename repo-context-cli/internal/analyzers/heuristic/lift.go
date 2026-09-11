@@ -42,7 +42,7 @@ var (
 	csCtorRe     = regexp.MustCompile(`(?m)public\s+(\w+)\s*\(([^)]*)\)`)
 	csParamRe    = regexp.MustCompile(`(?:this\s+)?([\w.<>,]+)\s+(\w+)\s*(?:,|$)`)
 	tsCtorRe     = regexp.MustCompile(`constructor\s*\(([^)]*)\)`)
-	tsParamRe    = regexp.MustCompile(`(?:private|public|protected|readonly)?\s*(\w+)\s*:\s*(\w+)`)
+	tsParamRe    = regexp.MustCompile(`(?:(?:private|public|protected|readonly)\s+)*(\w+)\s*:\s*(\w+)`)
 	awaitRe      = regexp.MustCompile(`\bawait\s+([\w.]+)`)
 	promiseAllRe = regexp.MustCompile(`Promise\.(all|allSettled|race)\s*\(`)
 	taskWhenRe   = regexp.MustCompile(`Task\.(WhenAll|WhenAny|WhenEach)\s*\(`)

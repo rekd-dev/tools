@@ -18,6 +18,7 @@ import (
 	"repo-context-cli/internal/analyzers"
 	"repo-context-cli/internal/analyzers/heuristic"
 	"repo-context-cli/internal/arch"
+	"repo-context-cli/internal/extract/nodehttp"
 	"repo-context-cli/internal/fitness"
 	"repo-context-cli/internal/modules"
 	"repo-context-cli/internal/serve"
@@ -69,7 +70,7 @@ func init() {
 var skipDirNames = map[string]bool{
 	"bin": true, "obj": true, "node_modules": true, ".git": true,
 	"packages": true, "dist": true, "_": true, "vendor": true,
-	"coverage": true, "test-results": true,
+	"coverage": true, "test-results": true, "tmp": true,
 }
 
 var sourceExtSet = map[string]bool{
@@ -89,7 +90,10 @@ var funcTriggerPatterns = []string{
 	"[TimerTrigger", "[BlobTrigger", "[QueueTrigger",
 }
 
-var nodeRoutePatterns = []string{"app.get(", "app.post(", "router.get(", "router.post("}
+var nodeRoutePatterns = []string{
+	"app.get(", "app.post(", "app.put(", "app.patch(", "app.delete(",
+	"router.get(", "router.post(", "router.put(", "router.patch(", "router.delete(",
+}
 
 var messagingPats = []string{
 	"ServiceBusClient", "EventHubProducerClient", "EventHubConsumerClient",
@@ -179,6 +183,7 @@ type Inventory struct {
 	// Accumulators (not serialized)
 	projRefEdges map[string]map[string]bool `json:"-"`
 	tsPathMap    map[string]string          `json:"-"`
+	nodeHTTP     *nodehttp.Acc              `json:"-"`
 }
 
 type ProjectDep struct {
@@ -495,6 +500,8 @@ func main() {
 		runFitness(os.Args[2:])
 	case "serve":
 		runServe(os.Args[2:])
+	case "mcp":
+		runMCP(os.Args[2:])
 	case "version":
 		fmt.Printf("repo-context v%s\n", toolVersion)
 	case "help", "--help", "-help", "-h":
@@ -1014,6 +1021,10 @@ func walkAndCollect(repoPath string, inv *Inventory, onlyChanged map[string]bool
 		case ".ts", ".tsx", ".jsx":
 			extractTypeScriptSymbols(text, rel, ext, inv)
 			extractTypeScriptEventFlows(text, rel, inv)
+			if inv.nodeHTTP == nil {
+				inv.nodeHTTP = nodehttp.New()
+			}
+			inv.nodeHTTP.Scan(rel, text)
 		case ".go":
 			extractGoSymbols(text, rel, inv)
 		}
@@ -1032,6 +1043,22 @@ func finalizeInventory(inv *Inventory) {
 	inv.ExternalDeps = uniqueSorted(inv.ExternalDeps)
 	sort.Strings(inv.EntryPoints)
 	inv.ProjectDeps = buildProjectDeps(inv)
+
+	if inv.nodeHTTP != nil {
+		eps, dis := nodehttp.Flush(inv.nodeHTTP)
+		for _, e := range eps {
+			inv.Endpoints = append(inv.Endpoints, EndpointDetail{
+				Route: e.Route, Method: e.Method, Handler: e.Handler,
+				File: e.File, Auth: e.Auth, Source: "heuristic",
+			})
+		}
+		for _, d := range dis {
+			inv.DIMappings = append(inv.DIMappings, DIMapping{
+				Interface: d.Interface, Implementation: d.Implementation,
+				Lifetime: d.Lifetime, File: d.File, Source: "heuristic",
+			})
+		}
+	}
 
 	fmt.Fprintf(os.Stderr, "  Building module graph...\n")
 	g := arch.BuildFromRepo(inv.Path, fitness.DefaultRules())
@@ -1598,7 +1625,7 @@ func writeInventoryDB(inv *Inventory, dbPath string) error {
 	mdStmt, _ := tx.Prepare("INSERT OR IGNORE INTO module_deps(from_id, to_id, kind, via_file) VALUES(?, ?, ?, ?)")
 	defer mdStmt.Close()
 	for _, d := range inv.ModuleDeps {
-		mdStmt.Exec(d.FromID, d.ToID, d.Kind, d.ViaFile)
+		mdStmt.Exec(d.FromID, d.ToID, d.PersistKind(), d.ViaFile)
 	}
 
 	return tx.Commit()
@@ -1890,6 +1917,7 @@ func loadInventoryFromDB(dbPath string) *Inventory {
 			var via sql.NullString
 			rows.Scan(&d.FromID, &d.ToID, &d.Kind, &via)
 			d.ViaFile = via.String
+			d.HydrateTypeOnly()
 			inv.ModuleDeps = append(inv.ModuleDeps, d)
 		}
 	}
@@ -2092,10 +2120,10 @@ LEFT JOIN type_implements ti ON t.name = ti.type_name AND t.file = ti.type_file
 GROUP BY t.name, t.file
 ORDER BY t.kind, t.name`,
 
-	"di":        "SELECT interface, implementation, lifetime, file, source FROM di_mappings ORDER BY interface",
-	"endpoints": "SELECT route, method, handler, file, return_type, auth, source FROM endpoints ORDER BY file, route",
-	"events":    "SELECT file, direction, mechanism, event_type, source FROM event_flows ORDER BY mechanism, event_type, direction",
-	"modules":   "SELECT id, kind, path, language, layer, abstract, namespace, drill_path, source FROM modules ORDER BY language, layer, path",
+	"di":          "SELECT interface, implementation, lifetime, file, source FROM di_mappings ORDER BY interface",
+	"endpoints":   "SELECT route, method, handler, file, return_type, auth, source FROM endpoints ORDER BY file, route",
+	"events":      "SELECT file, direction, mechanism, event_type, source FROM event_flows ORDER BY mechanism, event_type, direction",
+	"modules":     "SELECT id, kind, path, language, layer, abstract, namespace, drill_path, source FROM modules ORDER BY language, layer, path",
 	"module-deps": "SELECT from_id, to_id, kind, via_file FROM module_deps ORDER BY from_id, to_id",
 }
 
@@ -3215,6 +3243,42 @@ func runServe(args []string) {
 	}
 }
 
+func runMCP(args []string) {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	rulesPath := fs.String("rules", "", "Optional arch-rules.json path")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: repo-context mcp <path> [flags]")
+		fmt.Fprintln(os.Stderr, "  Serve the inventory graph over MCP stdio (search, entity, view, graph_view, fitness, path, meta).")
+		fs.PrintDefaults()
+	}
+	pathArg, _ := parseSubArgs(fs, args)
+	if pathArg == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+	repoPath, err := resolveRepoPath(pathArg)
+	if err != nil {
+		repoPath, err = validatePath(pathArg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	dbPath := filepath.Join(repoPath, ".context", "inventory.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error: no inventory.db at %s — run inventory first\n", dbPath)
+		os.Exit(1)
+	}
+	if err := serve.RunMCP(serve.Options{
+		RepoPath:  repoPath,
+		DBPath:    dbPath,
+		RulesPath: *rulesPath,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "mcp error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func printHelp() {
 	fmt.Print(`repo-context — pre-compute repository analysis signals for AI agents
 
@@ -3227,6 +3291,7 @@ SUBCOMMANDS:
     query <path>          Query inventory.db with SQL or predefined sections
     fitness <path>        Architecture fitness report (cycles, layers, purity)
     serve <path>          Local JSON API for the architecture viewer SPA
+    mcp <path>            MCP stdio server over the same inventory graph
     index <path>          Show status table of all repos in <path>
     version               Print version string
     help                  Show this help
@@ -3259,6 +3324,9 @@ FLAGS (serve):
     --static string       Optional arch-view dist/ directory
     --rules string        Optional arch-rules.json
 
+FLAGS (mcp):
+    --rules string        Optional arch-rules.json
+
 QUERY SECTIONS:
     structure             Metadata, projects, deps, entry points, file counts
     signals               Complexity signals (filtered by --min-score)
@@ -3282,6 +3350,7 @@ EXAMPLES:
     repo-context fitness ./repos/MyRepo --rules ./arch-rules.json --fail-on error
 
     repo-context serve ./repos/MyRepo --static ../arch-view/dist
+    repo-context mcp ./repos/MyRepo
 
     repo-context query ./repos/MyRepo --section modules
     repo-context query ./repos/MyRepo --section types
