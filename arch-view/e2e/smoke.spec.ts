@@ -2,19 +2,17 @@ import { expect, test } from '@playwright/test'
 import { expectNoPageError, waitForViewerReady } from './helpers'
 
 test.describe('Architecture Viewer smoke', () => {
-  test('home architecture graph shows app boxes', async ({ page }) => {
+  test('home architecture graph renders the chrome and some boxes', async ({ page }) => {
     await page.goto('/')
     await waitForViewerReady(page)
 
     await expect(page.getByRole('button', { name: 'Architecture' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Focus' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Flow' })).toBeVisible()
     await expect(page.getByRole('status')).toContainText(/apps that share a name sit together/i)
 
-    const appChip = page
-      .getByRole('button', { name: 'schedule-web', exact: true })
-      .or(page.getByRole('button', { name: 'auth', exact: true }))
-    await expect(appChip.first()).toBeVisible({ timeout: 90_000 })
-
     await expect(page.locator('.react-flow')).toBeVisible()
+    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 90_000 })
     await expectNoPageError(page)
   })
 
@@ -30,36 +28,14 @@ test.describe('Architecture Viewer smoke', () => {
     await expectNoPageError(page)
   })
 
-  test('search clock-in and flow lens shows clock-in graph', async ({ page }) => {
+  test('flow lens without a selection tells you to pick a route', async ({ page }) => {
     await page.goto('/')
     await waitForViewerReady(page)
-
-    const search = page.getByRole('textbox')
-    await search.fill('clock-in')
-    await page.waitForLoadState('networkidle')
-
-    const hit = page
-      .getByRole('button')
-      .filter({ hasText: /clock-in/i })
-      .first()
-    await expect(hit).toBeVisible({ timeout: 30_000 })
-    await hit.click()
 
     await page.getByRole('button', { name: 'Flow' }).click()
     await waitForViewerReady(page)
 
-    const dataCheckbox = page.getByRole('checkbox', { name: 'Data' })
-    if (!(await dataCheckbox.isChecked())) {
-      await dataCheckbox.check()
-    }
-    await waitForViewerReady(page)
-
-    const graphNode = page
-      .locator('.react-flow__node')
-      .filter({ hasText: /ClockInUseCase|POST \/clock-in/i })
-      .first()
-    await expect(graphNode).toBeVisible({ timeout: 90_000 })
-
+    await expect(page.getByRole('status')).toContainText(/HTTP route|pick|search/i)
     await expectNoPageError(page)
   })
 
@@ -74,14 +50,5 @@ test.describe('Architecture Viewer smoke', () => {
 
     await expect(page.locator('.react-flow')).toBeVisible()
     await expectNoPageError(page)
-
-    const commitChip = page.locator('.react-flow__node').filter({ hasText: /\d+ commits/i }).first()
-    const inspectorCommits = page.getByText(/\d+ commits in 90 days/i).first()
-
-    if ((await commitChip.count()) > 0) {
-      await expect(commitChip).toBeVisible()
-    } else if ((await inspectorCommits.count()) > 0) {
-      await expect(inspectorCommits).toBeVisible()
-    }
   })
 })

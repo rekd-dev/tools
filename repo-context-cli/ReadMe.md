@@ -229,7 +229,7 @@ Example Cursor MCP config:
 {
   "mcpServers": {
     "repo-context": {
-      "command": "R:\\Projects\\tools\\bin\\repo-context.exe",
+      "command": "/path/to/tools/bin/repo-context",
       "args": ["mcp", "/path/to/your-repo"]
     }
   }
@@ -340,4 +340,4 @@ repo-context inventory ./repos --refresh
 - **Roslyn sidecar** — optional .NET analyzer under `analyzers/roslyn`, invoked via `inventory --semantic=auto|required` (not a separate `--roslyn` flag).
 - **File walking** — skips: `bin`, `obj`, `node_modules`, `.git`, `packages`, `dist`, `vendor`, `coverage`, `test-results`.
 - **Backward compatibility** — v1 `inventory.json` files are not read or deleted. The `index` command reports them as `STALE (v1 json)`. Run `inventory --force` to migrate.
-- **Golden targets** — the target repo `apps/schedule-api` and `apps/safelog-api`: domain trees should stay clean; composition/http wiring is outer-layer and should not false-positive as domain.
+- **Golden targets** — the fixtures under `testdata/` (Clean Architecture TypeScript and C# trees). Domain trees should stay clean; composition/http wiring is outer-layer and should not false-positive as domain.

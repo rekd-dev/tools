@@ -1,12 +1,14 @@
 # tools
 
-Local-first architecture tooling.
+Local-first architecture tooling: a Go CLI that inventories a repository into SQLite, a React viewer for that graph, and shared agent config.
+
+Forks and private use are welcome under [MIT](LICENSE). I do not take unsolicited pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contents
 
 ### `config/`
 
-Global agent configuration loaded by all projects via `CLAUDE.md`.
+Agent instructions loaded by this repo’s [`CLAUDE.md`](CLAUDE.md). To reuse them in another project, `@`-import the files from this `config/` directory (absolute path on your machine).
 
 | File | Purpose |
 |---|---|
@@ -25,12 +27,12 @@ Go CLI that pre-computes repository analysis signals into a SQLite database so A
 
 `inventory --semantic=auto` (default) runs TypeScript/Roslyn sidecars when they are installed; `init --protect` is only for analysis-only clones (appends `*` to `.git/info/exclude`).
 
-Builds to `bin/repo-context.exe`:
+Builds to `bin/repo-context` (or `repo-context.exe` on Windows):
 
 ```bash
-# Windows
 cd repo-context-cli
-.\build.ps1
+./build.ps1    # Windows
+./build.sh     # Linux / macOS
 ```
 
 See [repo-context-cli/ReadMe.md](repo-context-cli/ReadMe.md) for full documentation.
@@ -51,13 +53,9 @@ npm run dev          # proxies /api to http://127.0.0.1:8787
 
 Deferred research features: [docs/backlog.md](docs/backlog.md).
 
-### `safe-log-helper/`
-
-Google Apps Script macro (`macro.gs.gs`) for reviewing a Google Sheet log. Setup notes in `info.txt`.
-
 ## Agents
 
-Specialized agents live in `~/.claude/agents/`:
+Specialized agents live in `~/.claude/agents/` (and Cursor’s agent list):
 
 | Agent | Purpose |
 |---|---|
@@ -78,5 +76,5 @@ Specialized agents live in `~/.claude/agents/`:
 | `bin/` | Compiled binaries |
 | `data/` | SQLite databases |
 | `indexer/` | Separate project with its own git history |
-| `safe-log-helper/*.json` | Google service account credentials |
-| `config/.claude/` | Machine-specific Claude permission settings |
+| `.cursor/` | Local editor plans |
+| `.claude/` | Machine-specific Claude permission settings |

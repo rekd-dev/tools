@@ -20,11 +20,16 @@ repo-context-cli/analyzers/roslyn/obj/
 repo-context-cli/analyzers/roslyn/.vs/
 
 # Credentials and secrets
-safe-log-helper/*.json
 *.key
 *.pem
 .env
 credentials.*
+
+# Local editor / agent plans (not product source)
+.cursor/
+
+# Store-local Apps Script helper (not part of this tree)
+safe-log-helper/
 
 # Go build artifacts
 vendor/

@@ -11,7 +11,7 @@ Inspired by [unclebob/arch-view](https://github.com/unclebob/arch-view): topo-la
 3. Inventory a target repo:
 
 ```bash
-repo-context inventory "./path/to/your-repo" --force
+repo-context inventory ./path/to/your-repo --force
 ```
 
 `--semantic=auto` (default) runs compiler sidecars when they are installed. Heuristic facts are always stored. Confidence on each edge says whether it is heuristic or compiler-resolved.
@@ -21,7 +21,7 @@ repo-context inventory "./path/to/your-repo" --force
 Terminal A — API:
 
 ```bash
-repo-context serve "./path/to/your-repo" --addr 127.0.0.1:8787
+repo-context serve ./path/to/your-repo --addr 127.0.0.1:8787
 ```
 
 Terminal B — SPA:
@@ -45,7 +45,7 @@ Shareable URL hash restores `lens`, `path`, `sel`, `view=matrix`, and overlays (
 
 ```bash
 npm run build
-repo-context serve "./path/to/your-repo" --static ./dist
+repo-context serve ./path/to/your-repo --static ./dist
 ```
 
 Then open http://127.0.0.1:8787

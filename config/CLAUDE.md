@@ -1,6 +1,6 @@
 # Claude Code — Global Config
 
-This directory contains shared configuration loaded across all projects under `/path/to/tools/`.
+This directory contains shared agent configuration. This repository's root [`CLAUDE.md`](../CLAUDE.md) `@`-imports the files below.
 
 ## Files
 
@@ -16,7 +16,7 @@ This directory contains shared configuration loaded across all projects under `/
 
 Claude Code automatically reads `CLAUDE.md` files at startup. To make these global configs apply to a project:
 
-1. Add an `@import` reference in that project's own `CLAUDE.md`:
+1. Add an `@import` reference in that project's own `CLAUDE.md` (use the path where you cloned this repo):
    ```
    @/path/to/tools/config/system.md
    @/path/to/tools/config/skills.md

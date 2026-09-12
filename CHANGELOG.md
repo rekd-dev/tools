@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- MIT license; contribution policy is invite-only (forks welcome).
+- Removed store-local `safe-log-helper/` from the published tree (still gitignored locally).
+- Docs use generic inventory paths instead of a private product checkout.
+
 ### Added
 
 - Local **arch-view** SPA (Architecture / Focus / Flow lenses, fitness overlay) served by `repo-context serve`.

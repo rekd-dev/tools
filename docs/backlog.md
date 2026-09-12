@@ -4,7 +4,7 @@ Two piles: **research** (deferred on purpose) and **graph quality** (the remaini
 
 ## Graph quality (active)
 
-From `.cursor/plans/graph-quality-punch.md`. Highest leftover first.
+Highest leftover first.
 
 ### Landed
 - P0-1 / P0-2 — TypeScript sidecar method nodes; calls attributed to the method; method-level `implements`
@@ -25,7 +25,7 @@ From `.cursor/plans/graph-quality-punch.md`. Highest leftover first.
 ### Next slices
 - **P1-1** Heuristic owner attribution: class nearest above the site, never a random type in the file
 - **P1-2** Stop double-declaring functions as `type:` nodes (unify with sidecar `method:` ids)
-- **P1-4** Sidecar walks arrow/route plugins (`me-time.ts` still has 0 `calls`; endpoint→UC is heuristic `handles`)
+- **P1-4** Sidecar walks arrow/route plugins (Fastify plugin files that only register routes still have 0 `calls`; endpoint→use-case is heuristic `handles`)
 - **P1-5** Inline object-type ctor params + `import type` aliases
 - **P1-8** `spineInject` from resolved calls, not port name tokens
 - **P2** Hygiene: `nodehttp` closure `handles`, skip-rule unify, stable heuristic edge ids, SignalR mislabel, inherit layer onto methods, fitness import line numbers
