@@ -10,6 +10,7 @@
 
 ### Added
 
+- `repo-context-cli/build.sh` for Linux/macOS (alongside `build.ps1`).
 - Local **arch-view** SPA (Architecture / Focus / Flow lenses, fitness overlay) served by `repo-context serve`.
 - Evidence-aware graph store (`graph_nodes` / `graph_edges` / `graph_evidence`) and `inventory --semantic=auto|required|off`.
 - `init --protect` for analysis-only clones (`.git/info/exclude`).
